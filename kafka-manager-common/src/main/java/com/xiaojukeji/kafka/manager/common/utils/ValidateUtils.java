@@ -1,9 +1,8 @@
 package com.xiaojukeji.kafka.manager.common.utils;
 
-import com.xiaojukeji.kafka.manager.common.bizenum.IDCEnum;
-import com.xiaojukeji.kafka.manager.common.constant.TopicCreationConstant;
 import org.apache.commons.lang.StringUtils;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -13,6 +12,20 @@ import java.util.Set;
  * @date 20/4/16
  */
 public class ValidateUtils {
+    /**
+     * 任意一个为空, 则返回true
+     */
+    public static boolean anyNull(Object... objects) {
+        return Arrays.stream(objects).anyMatch(ValidateUtils::isNull);
+    }
+
+    /**
+     * 是空字符串或者空
+     */
+    public static boolean anyBlank(String... strings) {
+        return Arrays.stream(strings).anyMatch(StringUtils::isBlank);
+    }
+
     /**
      * 为空
      */
@@ -82,24 +95,5 @@ public class ValidateUtils {
 
     public static boolean isNullOrLessThanZero(Double value) {
         return value == null || value < 0;
-    }
-
-    public static boolean topicNameLegal(String idc, String topicName) {
-        if (ValidateUtils.isNull(idc) || ValidateUtils.isNull(topicName)) {
-            return false;
-        }
-
-        // 校验Topic的长度
-        if (topicName.length() >= TopicCreationConstant.TOPIC_NAME_MAX_LENGTH) {
-            return false;
-        }
-
-        // 校验前缀
-        if (IDCEnum.CN.getIdc().equals(idc) ||
-                (IDCEnum.US.getIdc().equals(idc) && topicName.startsWith(TopicCreationConstant.TOPIC_NAME_PREFIX_US)) ||
-                (IDCEnum.RU.getIdc().equals(idc) && topicName.startsWith(TopicCreationConstant.TOPIC_NAME_PREFIX_RU))) {
-            return true;
-        }
-        return false;
     }
 }

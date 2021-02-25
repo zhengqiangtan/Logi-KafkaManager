@@ -15,8 +15,6 @@ public interface AuthorityDao {
      */
     int insert(AuthorityDO authorityDO);
 
-    int replaceIgnoreGatewayDB(AuthorityDO authorityDO);
-
     /**
      * 获取权限
      * @param clusterId 集群id
@@ -37,4 +35,6 @@ public interface AuthorityDao {
     List<AuthorityDO> listAll();
 
     Map<String, Map<Long, Map<String, AuthorityDO>>> getAllAuthority();
+
+    int deleteAuthorityByTopic(Long clusterId, String topicName);
 }

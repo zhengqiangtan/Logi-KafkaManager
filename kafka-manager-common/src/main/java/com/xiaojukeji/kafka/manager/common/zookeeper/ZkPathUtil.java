@@ -18,6 +18,8 @@ public class ZkPathUtil {
 
     public static final String      CONSUMER_ROOT_NODE          = ZOOKEEPER_SEPARATOR + "consumers";
 
+    public static final String      REASSIGN_PARTITIONS_ROOT_NODE       = "/admin/reassign_partitions";
+
     /**
      * config
      */
@@ -27,11 +29,13 @@ public class ZkPathUtil {
 
     public static final String      CONFIG_CLIENTS_ROOT_NODE    = CONFIG_ROOT_NODE + ZOOKEEPER_SEPARATOR + "clients";
 
-    public static final String      CONFIG_ENTITY_CHANGES_ROOT_NODE    = CONFIG_ROOT_NODE + ZOOKEEPER_SEPARATOR + "changes/config_change_";
+    public static final String      CONFIG_ENTITY_CHANGES_ROOT_NODE     = CONFIG_ROOT_NODE + ZOOKEEPER_SEPARATOR + "changes/config_change_";
 
-    public static final String      REASSIGN_PARTITIONS_ROOT_NODE = "/admin/reassign_partitions";
+    private static final String      D_METRICS_CONFIG_ROOT_NODE         = CONFIG_ROOT_NODE + ZOOKEEPER_SEPARATOR + "KafkaExMetrics";
 
-    private static final String      D_METRICS_CONFIG_ROOT_NODE  = CONFIG_ROOT_NODE + ZOOKEEPER_SEPARATOR + "KafkaExMetrics";
+    public static final String       D_CONFIG_EXTENSION_ROOT_NODE       = CONFIG_ROOT_NODE + ZOOKEEPER_SEPARATOR +  "extension";
+
+    public static final String       D_CONTROLLER_CANDIDATES            = D_CONFIG_EXTENSION_ROOT_NODE  + ZOOKEEPER_SEPARATOR + "candidates";
 
     public static String getBrokerIdNodePath(Integer brokerId) {
         return BROKER_IDS_ROOT + ZOOKEEPER_SEPARATOR + String.valueOf(brokerId);
@@ -109,6 +113,10 @@ public class ZkPathUtil {
     }
 
     public static String getKafkaExtraMetricsPath(Integer brokerId) {
-        return D_METRICS_CONFIG_ROOT_NODE + ZOOKEEPER_SEPARATOR + String.valueOf(brokerId);
+        return D_METRICS_CONFIG_ROOT_NODE + ZOOKEEPER_SEPARATOR + brokerId;
+    }
+
+    public static String getControllerCandidatePath(Integer brokerId) {
+        return D_CONTROLLER_CANDIDATES + ZOOKEEPER_SEPARATOR + brokerId;
     }
 }

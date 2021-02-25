@@ -1,8 +1,12 @@
 package com.xiaojukeji.kafka.manager.service.service.impl;
 
 import com.xiaojukeji.kafka.manager.common.bizenum.KafkaClientEnum;
+import com.xiaojukeji.kafka.manager.common.bizenum.ModuleEnum;
+import com.xiaojukeji.kafka.manager.common.bizenum.OperateEnum;
 import com.xiaojukeji.kafka.manager.common.bizenum.TopicAuthorityEnum;
+import com.xiaojukeji.kafka.manager.common.constant.KafkaConstant;
 import com.xiaojukeji.kafka.manager.common.constant.KafkaMetricsCollections;
+import com.xiaojukeji.kafka.manager.common.constant.TopicCreationConstant;
 import com.xiaojukeji.kafka.manager.common.entity.Result;
 import com.xiaojukeji.kafka.manager.common.entity.ResultStatus;
 import com.xiaojukeji.kafka.manager.common.entity.ao.RdTopicBasic;
@@ -14,6 +18,7 @@ import com.xiaojukeji.kafka.manager.common.entity.metrics.TopicMetrics;
 import com.xiaojukeji.kafka.manager.common.entity.pojo.gateway.AppDO;
 import com.xiaojukeji.kafka.manager.common.entity.pojo.gateway.AuthorityDO;
 import com.xiaojukeji.kafka.manager.common.utils.DateUtils;
+import com.xiaojukeji.kafka.manager.common.utils.JsonUtils;
 import com.xiaojukeji.kafka.manager.common.utils.NumberUtils;
 import com.xiaojukeji.kafka.manager.common.utils.ValidateUtils;
 import com.xiaojukeji.kafka.manager.common.zookeeper.znode.brokers.TopicMetadata;
@@ -33,6 +38,7 @@ import com.xiaojukeji.kafka.manager.service.utils.KafkaZookeeperUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -76,6 +82,9 @@ public class TopicManagerServiceImpl implements TopicManagerService {
 
     @Autowired
     private RegionService regionService;
+
+    @Autowired
+    private OperateRecordService operateRecordService;
 
     @Override
     public List<TopicDO> listAll() {
@@ -290,6 +299,10 @@ public class TopicManagerServiceImpl implements TopicManagerService {
                                      Map<String, TopicDO> topicMap) {
         List<TopicDTO> dtoList = new ArrayList<>();
         for (String topicName: PhysicalClusterMetadataManager.getTopicNameList(clusterDO.getId())) {
+            if (topicName.equals(KafkaConstant.COORDINATOR_TOPIC_NAME) || topicName.equals(KafkaConstant.TRANSACTION_TOPIC_NAME)) {
+                continue;
+            }
+
             LogicalClusterDO logicalClusterDO = logicalClusterMetadataManager.getTopicLogicalCluster(
                     clusterDO.getId(),
                     topicName
@@ -333,6 +346,12 @@ public class TopicManagerServiceImpl implements TopicManagerService {
             if (ValidateUtils.isNull(topicDO)) {
                 return ResultStatus.TOPIC_NOT_EXIST;
             }
+
+            Map<String, Object> content = new HashMap<>(2);
+            content.put("clusterId", clusterId);
+            content.put("topicName", topicName);
+            recordOperation(content, topicName, operator);
+
             topicDO.setDescription(description);
             if (topicDao.updateByName(topicDO) > 0) {
                 return ResultStatus.SUCCESS;
@@ -343,6 +362,63 @@ public class TopicManagerServiceImpl implements TopicManagerService {
                     clusterId, topicName, description, operator, e);
         }
         return ResultStatus.MYSQL_ERROR;
+    }
+
+    @Override
+    public ResultStatus modifyTopicByOp(Long clusterId, String topicName, String appId, String description, String operator) {
+        try {
+            if (!PhysicalClusterMetadataManager.isTopicExist(clusterId, topicName)) {
+                return ResultStatus.TOPIC_NOT_EXIST;
+            }
+            AppDO appDO = appService.getByAppId(appId);
+            if (ValidateUtils.isNull(appDO)) {
+                return ResultStatus.APP_NOT_EXIST;
+            }
+
+            Map<String, Object> content = new HashMap<>(4);
+            content.put("clusterId", clusterId);
+            content.put("topicName", topicName);
+            content.put("appId", appId);
+            recordOperation(content, topicName, operator);
+
+            TopicDO topicDO = topicDao.getByTopicName(clusterId, topicName);
+            if (ValidateUtils.isNull(topicDO)) {
+                // 不存在, 则需要插入
+                topicDO = new TopicDO();
+                topicDO.setAppId(appId);
+                topicDO.setClusterId(clusterId);
+                topicDO.setTopicName(topicName);
+                topicDO.setPeakBytesIn(TopicCreationConstant.DEFAULT_QUOTA);
+                topicDO.setDescription(description);
+                this.addTopic(topicDO);
+            } else {
+                // 存在, 则直接更新
+                topicDO.setAppId(appId);
+                topicDO.setDescription(description);
+                topicDao.updateByName(topicDO);
+            }
+
+            AuthorityDO authorityDO = new AuthorityDO();
+            authorityDO.setAppId(appId);
+            authorityDO.setClusterId(clusterId);
+            authorityDO.setTopicName(topicName);
+            authorityDO.setAccess(TopicAuthorityEnum.READ_WRITE.getCode());
+            authorityService.addAuthority(authorityDO);
+        } catch (Exception e) {
+            LOGGER.error("modify topic failed, clusterId:{} topicName:{} description:{} operator:{} ",
+                    clusterId, topicName, description, operator, e);
+        }
+        return ResultStatus.MYSQL_ERROR;
+    }
+
+    private void recordOperation(Map<String, Object> content, String topicName, String operator) {
+        OperateRecordDO operateRecordDO = new OperateRecordDO();
+        operateRecordDO.setModuleId(ModuleEnum.TOPIC.getCode());
+        operateRecordDO.setOperateId(OperateEnum.EDIT.getCode());
+        operateRecordDO.setResource(topicName);
+        operateRecordDO.setContent(JsonUtils.toJSONString(content));
+        operateRecordDO.setOperator(operator);
+        operateRecordService.insert(operateRecordDO);
     }
 
     @Override
@@ -359,6 +435,9 @@ public class TopicManagerServiceImpl implements TopicManagerService {
     public int addTopic(TopicDO topicDO) {
         try {
             return topicDao.insert(topicDO);
+        } catch (DuplicateKeyException duplicateKeyException) {
+            // 主建重复了, 非重要问题
+            LOGGER.debug("class=TopicManagerServiceImpl||method=addTopic||data={}||msg=exist duplicate topic", JsonUtils.toJSONString(topicDO));
         } catch (Exception e) {
             LOGGER.error("insert topic failed, TopicDO:{}", topicDO.toString(), e);
         }

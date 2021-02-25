@@ -22,7 +22,7 @@ import java.util.concurrent.*;
  * @date 20/5/14
  */
 public class TopicStateListener implements StateChangeListener {
-    private final static Logger LOGGER = LoggerFactory.getLogger(TopicStateListener.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(TopicStateListener.class);
 
     private Long clusterId;
 
@@ -40,7 +40,7 @@ public class TopicStateListener implements StateChangeListener {
             FutureTask[] taskList = new FutureTask[topicNameList.size()];
             for (int i = 0; i < topicNameList.size(); i++) {
                 String topicName = topicNameList.get(i);
-                taskList[i] = new FutureTask(new Callable() {
+                taskList[i] = new FutureTask(new Callable<Object>() {
                     @Override
                     public Object call() throws Exception {
                         processTopicAdded(topicName);
@@ -52,7 +52,6 @@ public class TopicStateListener implements StateChangeListener {
         } catch (Exception e) {
             LOGGER.error("init topics metadata failed, clusterId:{}.", clusterId, e);
         }
-        return;
     }
 
     @Override

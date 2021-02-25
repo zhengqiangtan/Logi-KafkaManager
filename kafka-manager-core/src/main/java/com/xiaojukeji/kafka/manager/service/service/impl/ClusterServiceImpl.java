@@ -1,19 +1,23 @@
 package com.xiaojukeji.kafka.manager.service.service.impl;
 
+import com.xiaojukeji.kafka.manager.common.bizenum.DBStatusEnum;
+import com.xiaojukeji.kafka.manager.common.bizenum.ModuleEnum;
+import com.xiaojukeji.kafka.manager.common.bizenum.OperateEnum;
+import com.xiaojukeji.kafka.manager.common.entity.Result;
 import com.xiaojukeji.kafka.manager.common.entity.ResultStatus;
 import com.xiaojukeji.kafka.manager.common.entity.ao.ClusterDetailDTO;
+import com.xiaojukeji.kafka.manager.common.entity.ao.cluster.ControllerPreferredCandidate;
 import com.xiaojukeji.kafka.manager.common.entity.vo.normal.cluster.ClusterNameDTO;
 import com.xiaojukeji.kafka.manager.common.utils.ListUtils;
 import com.xiaojukeji.kafka.manager.common.entity.pojo.*;
 import com.xiaojukeji.kafka.manager.common.utils.ValidateUtils;
+import com.xiaojukeji.kafka.manager.common.zookeeper.znode.brokers.BrokerMetadata;
 import com.xiaojukeji.kafka.manager.dao.ClusterDao;
 import com.xiaojukeji.kafka.manager.dao.ClusterMetricsDao;
 import com.xiaojukeji.kafka.manager.dao.ControllerDao;
 import com.xiaojukeji.kafka.manager.service.cache.LogicalClusterMetadataManager;
 import com.xiaojukeji.kafka.manager.service.cache.PhysicalClusterMetadataManager;
-import com.xiaojukeji.kafka.manager.service.service.ClusterService;
-import com.xiaojukeji.kafka.manager.service.service.ConsumerService;
-import com.xiaojukeji.kafka.manager.service.service.RegionService;
+import com.xiaojukeji.kafka.manager.service.service.*;
 import com.xiaojukeji.kafka.manager.service.utils.ConfigUtils;
 import org.apache.zookeeper.ZooKeeper;
 import org.slf4j.Logger;
@@ -57,15 +61,27 @@ public class ClusterServiceImpl implements ClusterService {
     @Autowired
     private ConfigUtils configUtils;
 
+    @Autowired
+    private ZookeeperService zookeeperService;
+
+    @Autowired
+    private OperateRecordService operateRecordService;
+
     @Override
     public ResultStatus addNew(ClusterDO clusterDO, String operator) {
         if (ValidateUtils.isNull(clusterDO) || ValidateUtils.isNull(operator)) {
             return ResultStatus.PARAM_ILLEGAL;
         }
         if (!isZookeeperLegal(clusterDO.getZookeeper())) {
-            return ResultStatus.CONNECT_ZOOKEEPER_FAILED;
+            return ResultStatus.ZOOKEEPER_CONNECT_FAILED;
         }
         try {
+            Map<String, String> content = new HashMap<>();
+            content.put("zk address", clusterDO.getZookeeper());
+            content.put("bootstrap servers", clusterDO.getBootstrapServers());
+            content.put("security properties", clusterDO.getSecurityProperties());
+            content.put("jmx properties", clusterDO.getJmxProperties());
+            operateRecordService.insert(operator, ModuleEnum.CLUSTER, clusterDO.getClusterName(), OperateEnum.ADD, content);
             if (clusterDao.insert(clusterDO) <= 0) {
                 LOGGER.error("add new cluster failed, clusterDO:{}.", clusterDO);
                 return ResultStatus.MYSQL_ERROR;
@@ -93,8 +109,14 @@ public class ClusterServiceImpl implements ClusterService {
 
         if (!originClusterDO.getZookeeper().equals(clusterDO.getZookeeper())) {
             // 不允许修改zk地址
-            return ResultStatus.CHANGE_ZOOKEEPER_FORBIDEN;
+            return ResultStatus.CHANGE_ZOOKEEPER_FORBIDDEN;
         }
+        Map<String, String> content = new HashMap<>();
+        content.put("cluster id", clusterDO.getId().toString());
+        content.put("security properties", clusterDO.getSecurityProperties());
+        content.put("jmx properties", clusterDO.getJmxProperties());
+        operateRecordService.insert(operator, ModuleEnum.CLUSTER, clusterDO.getClusterName(), OperateEnum.EDIT, content);
+
         clusterDO.setStatus(originClusterDO.getStatus());
         return updateById(clusterDO);
     }
@@ -183,20 +205,31 @@ public class ClusterServiceImpl implements ClusterService {
     }
 
     private boolean isZookeeperLegal(String zookeeper) {
+        boolean status = false;
+
         ZooKeeper zk = null;
         try {
             zk = new ZooKeeper(zookeeper, 1000, null);
-        } catch (Throwable t) {
-            return false;
+            for (int i = 0; i < 15; ++i) {
+                if (zk.getState().isConnected()) {
+                    // 只有状态是connected的时候，才表示地址是合法的
+                    status = true;
+                    break;
+                }
+                Thread.sleep(1000);
+            }
+        } catch (Exception e) {
+            LOGGER.error("class=ClusterServiceImpl||method=isZookeeperLegal||zookeeper={}||msg=zk address illegal||errMsg={}", zookeeper, e.getMessage());
         } finally {
             try {
                 if (zk != null) {
                     zk.close();
                 }
-            } catch (Throwable t) {
+            } catch (Exception e) {
+                LOGGER.error("class=ClusterServiceImpl||method=isZookeeperLegal||zookeeper={}||msg=close zk  client failed||errMsg={}", zookeeper, e.getMessage());
             }
         }
-        return true;
+        return status;
     }
 
     @Override
@@ -245,12 +278,15 @@ public class ClusterServiceImpl implements ClusterService {
     }
 
     @Override
-    public ResultStatus deleteById(Long clusterId) {
+    public ResultStatus deleteById(Long clusterId, String operator) {
         List<RegionDO> regionDOList = regionService.getByClusterId(clusterId);
         if (!ValidateUtils.isEmptyList(regionDOList)) {
             return ResultStatus.OPERATION_FORBIDDEN;
         }
         try {
+            Map<String, String> content = new HashMap<>();
+            content.put("cluster id", clusterId.toString());
+            operateRecordService.insert(operator, ModuleEnum.CLUSTER, String.valueOf(clusterId), OperateEnum.DELETE, content);
             if (clusterDao.deleteById(clusterId) <= 0) {
                 LOGGER.error("delete cluster failed, clusterId:{}.", clusterId);
                 return ResultStatus.MYSQL_ERROR;
@@ -262,25 +298,11 @@ public class ClusterServiceImpl implements ClusterService {
         return ResultStatus.SUCCESS;
     }
 
-    @Override
-    public ClusterDO selectSuitableCluster(Long clusterId, String dataCenter) {
-        if (!ValidateUtils.isNullOrLessThanZero(clusterId)) {
-            return getById(clusterId);
-        }
-        if (ValidateUtils.isBlank(dataCenter)) {
-            return null;
-        }
-        List<ClusterDO> clusterDOList = this.listAll();
-        if (ValidateUtils.isEmptyList(clusterDOList)) {
-            return null;
-        }
-        return clusterDOList.get(0);
-    }
-
     private ClusterDetailDTO getClusterDetailDTO(ClusterDO clusterDO, Boolean needDetail) {
         if (ValidateUtils.isNull(clusterDO)) {
-            return null;
+            return new ClusterDetailDTO();
         }
+
         ClusterDetailDTO dto = new ClusterDetailDTO();
         dto.setClusterId(clusterDO.getId());
         dto.setClusterName(clusterDO.getClusterName());
@@ -289,6 +311,7 @@ public class ClusterServiceImpl implements ClusterService {
         dto.setKafkaVersion(physicalClusterMetadataManager.getKafkaVersionFromCache(clusterDO.getId()));
         dto.setIdc(configUtils.getIdc());
         dto.setSecurityProperties(clusterDO.getSecurityProperties());
+        dto.setJmxProperties(clusterDO.getJmxProperties());
         dto.setStatus(clusterDO.getStatus());
         dto.setGmtCreate(clusterDO.getGmtCreate());
         dto.setGmtModify(clusterDO.getGmtModify());
@@ -299,5 +322,67 @@ public class ClusterServiceImpl implements ClusterService {
         dto.setTopicNum(PhysicalClusterMetadataManager.getTopicNameList(clusterDO.getId()).size());
         dto.setControllerId(PhysicalClusterMetadataManager.getControllerId(clusterDO.getId()));
         return dto;
+    }
+
+    @Override
+    public Result<List<ControllerPreferredCandidate>> getControllerPreferredCandidates(Long clusterId) {
+        Result<List<Integer>> candidateResult = zookeeperService.getControllerPreferredCandidates(clusterId);
+        if (candidateResult.failed()) {
+            return new Result<>(candidateResult.getCode(), candidateResult.getMessage());
+        }
+        if (ValidateUtils.isEmptyList(candidateResult.getData())) {
+            return Result.buildSuc(new ArrayList<>());
+        }
+
+        List<ControllerPreferredCandidate> controllerPreferredCandidateList = new ArrayList<>();
+        for (Integer brokerId: candidateResult.getData()) {
+            ControllerPreferredCandidate controllerPreferredCandidate = new ControllerPreferredCandidate();
+            controllerPreferredCandidate.setBrokerId(brokerId);
+            BrokerMetadata brokerMetadata = PhysicalClusterMetadataManager.getBrokerMetadata(clusterId, brokerId);
+            if (ValidateUtils.isNull(brokerMetadata)) {
+                controllerPreferredCandidate.setStatus(DBStatusEnum.DEAD.getStatus());
+            } else {
+                controllerPreferredCandidate.setHost(brokerMetadata.getHost());
+                controllerPreferredCandidate.setStartTime(brokerMetadata.getTimestamp());
+                controllerPreferredCandidate.setStatus(DBStatusEnum.ALIVE.getStatus());
+            }
+            controllerPreferredCandidateList.add(controllerPreferredCandidate);
+        }
+        return Result.buildSuc(controllerPreferredCandidateList);
+    }
+
+    @Override
+    public Result addControllerPreferredCandidates(Long clusterId, List<Integer> brokerIdList) {
+        if (ValidateUtils.isNull(clusterId) || ValidateUtils.isEmptyList(brokerIdList)) {
+            return Result.buildFrom(ResultStatus.PARAM_ILLEGAL);
+        }
+
+        // 增加的BrokerId需要判断是否存活
+        for (Integer brokerId: brokerIdList) {
+            if (!PhysicalClusterMetadataManager.isBrokerAlive(clusterId, brokerId)) {
+                return Result.buildFrom(ResultStatus.BROKER_NOT_EXIST);
+            }
+
+            Result result =  zookeeperService.addControllerPreferredCandidate(clusterId, brokerId);
+            if (result.failed()) {
+                return result;
+            }
+        }
+        return Result.buildSuc();
+    }
+
+    @Override
+    public Result deleteControllerPreferredCandidates(Long clusterId, List<Integer> brokerIdList) {
+        if (ValidateUtils.isNull(clusterId) || ValidateUtils.isEmptyList(brokerIdList)) {
+            return Result.buildFrom(ResultStatus.PARAM_ILLEGAL);
+        }
+
+        for (Integer brokerId: brokerIdList) {
+            Result result = zookeeperService.deleteControllerPreferredCandidate(clusterId, brokerId);
+            if (result.failed()) {
+                return result;
+            }
+        }
+        return Result.buildSuc();
     }
 }
